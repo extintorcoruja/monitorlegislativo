@@ -1329,8 +1329,20 @@ async function automaticSearchAlesp(keywords, verificationId) {
   return { results: Array.from(rows.values()), startDate, errors: [] };
 }
 
+function automaticTypeCategory(type) {
+  const t = norm(type).toUpperCase();
+  if (!t) return "Não identificado";
+  if (["REQ", "RQS", "RIC", "RCP", "RQM"].includes(t) || t.startsWith("REQ")) return "Requerimento";
+  if (t.includes("EMENDA") || ["EM", "EMC", "EMA", "EMR"].includes(t)) return "Emenda";
+  if (t.includes("PARECER") || ["PAR", "PDC"].includes(t)) return "Parecer";
+  if (t === "VET" || t.startsWith("VETO")) return "Veto";
+  if (t.includes("INDICA") || ["IND", "INC"].includes(t)) return "Indicação";
+  if (["PL", "PLC", "PLP", "PLS", "PLV", "PEC", "PDC", "PDL", "PRS", "PRC", "PR", "MP", "MPV"].includes(t)) return "Projeto / Proposição";
+  return "Outros";
+}
+
 async function getAutomaticSearchResults(verificationId, fonte) {
-  let q = db.from("automatic_search_results").select("*").order("score", { ascending: false }).order("discovered_at", { ascending: false });
+  let q = db.from("automatic_search_results").select("*").order("discovered_at", { ascending: false });
   if (verificationId) q = q.eq("verification_id", verificationId);
   if (fonte) q = q.eq("source_code", sourceCode(fonte));
   const r = await q.limit(300);
@@ -1367,7 +1379,7 @@ async function getAutomaticSearchResults(verificationId, fonte) {
       autor: x.author_text || "",
       link: x.official_url || "",
       termos: x.matched_terms || [],
-      score: Number(x.score || 0),
+      categoriaTipo: automaticTypeCategory(x.type),
       status: propIdKeys.has(idKey) || propKeys.has(key)
         ? "Já monitorada"
         : (candIdKeys.has(idKey) || candKeys.has(key) ? "Em avaliação" : x.status || "Nova"),
