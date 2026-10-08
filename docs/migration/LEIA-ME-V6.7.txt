@@ -1,0 +1,62 @@
+MONITOR LEGISLATIVO — APPS SCRIPT V6.7
+
+ALTERAÇÕES
+
+1. NOVA CONSULTA / RETRY
+Ao clicar em "Tentar novamente":
+- o botão muda para "Consultando [Casa]...";
+- os botões de nova tentativa ficam temporariamente bloqueados;
+- aparece um indicador com spinner e a mensagem de que a consulta está sendo realizada;
+- ao concluir, a interface volta ao estado normal.
+
+2. PESQUISA GUIADA
+O bloco "Termos de apoio" já inicia aberto.
+
+3. ABA PROPOSITURAS
+A coluna Propositura passa a ser a referência visual principal:
+- Casa: 6%
+- Propositura: 31%
+- Situação / Regime: 17%
+- Última movimentação: 32%
+- Data: 8%
+- Fonte: 6%
+
+A ementa possui mais espaço.
+A última movimentação deixa de ser exibida como o elemento dominante da linha.
+
+4. ALESP — REGIME DE TRAMITAÇÃO
+A coluna foi renomeada para "Situação / Regime":
+- Câmara: Situação atual
+- Senado: Situação atual
+- ALESP: Regime de tramitação
+
+Novos campos:
+- regimeTramitacao
+- dataRegime
+
+A V6.7 usa o dataset oficial documento_regime.zip.
+O regime ativo é priorizado pelo registro sem DataFim; havendo mais de um, usa o DataInicio mais recente.
+
+A atualização é tentada após uma consulta ALESP bem-sucedida, mas falha na leitura do regime NÃO invalida a verificação diária, pois é um dado complementar.
+
+Também foi adicionado o botão:
+"Atualizar regimes ALESP"
+na aba Proposituras.
+
+5. ANDAMENTO ANTIGO DA ALESP
+Quando o sistema precisa exibir o andamento antigo da base e o texto começa com DD/MM/AAAA:
+- a data é separada do texto;
+- passa para a coluna Data;
+- a movimentação fica mais limpa.
+
+INSTALAÇÃO
+1. Substitua Code.gs, Index.html e Styles.html.
+2. BaseInicial.gs pode permanecer.
+3. Salve.
+4. Execute UMA VEZ: prepararBancoV67()
+5. Implantar > Gerenciar implantações > lápis > Nova versão > Implantar.
+
+Depois:
+- abra Proposituras;
+- clique "Atualizar regimes ALESP";
+- confira o preenchimento da coluna Situação / Regime.
