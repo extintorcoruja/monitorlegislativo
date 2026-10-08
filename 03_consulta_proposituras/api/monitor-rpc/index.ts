@@ -1913,6 +1913,8 @@ async function saveReport(verificationId, observation) {
   });
 
   await insertRow("reports", {
+    report_type: "daily",
+    parameters: {},
     verification_id: verificationId,
     report_date: v.verification_date,
     responsible: v.responsible,
