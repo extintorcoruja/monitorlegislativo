@@ -1282,7 +1282,7 @@ function alespDateToIso(value) {
 }
 
 async function automaticSearchAlesp(keywords, verificationId) {
-  const zipUrl = "https://www3.al.sp.gov.br/repositorio/dados-abertos/output/xml/processo_legislativo/proposituras.zip";
+  const zipUrl = "https://www.al.sp.gov.br/repositorioDados/processo_legislativo/proposituras.zip";
   const response = await fetch(zipUrl, {
     headers: {
       accept: "application/zip, application/octet-stream",
