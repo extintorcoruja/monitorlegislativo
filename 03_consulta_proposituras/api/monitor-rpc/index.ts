@@ -1112,43 +1112,77 @@ function normalizeAutomaticItem(sourceCodeValue, item, matchedTerms, score, veri
 async function automaticSearchCamara(keywords, verificationId) {
   const rows = new Map();
   const errors = [];
+  const diagnostics = {
+    startDate: "",
+    endDate: today(),
+    terms: keywords.map(function(k) { return k.termo; }),
+    requests: 0,
+    failedRequests: 0,
+    pages: 0,
+    rawResults: 0,
+    matchedResults: 0
+  };
   const lastDate = await getLastAutomaticSearchDate("camara");
   const startDate = searchStartDate(lastDate, 45);
+  diagnostics.startDate = startDate;
+
   for (let start = 0; start < keywords.length; start += 2) {
     const keywordBatch = keywords.slice(start, start + 2);
     await Promise.all(keywordBatch.map(async function(k) {
+      diagnostics.requests++;
       try {
-        const url =
-          "https://dadosabertos.camara.leg.br/api/v2/proposicoes" +
-          "?keywords=" + encodeURIComponent(k.termo) +
-          "&dataApresentacaoInicio=" + encodeURIComponent(startDate) +
-          "&dataApresentacaoFim=" + encodeURIComponent(today()) +
-          "&itens=30&pagina=1&ordem=DESC&ordenarPor=id";
-        const response = await fetch(url, {
-          headers: {
-            accept: "application/json",
-            "user-agent": "MonitorLegislativo/1.0"
-          }
-        });
-        if (!response.ok) throw new Error("HTTP " + response.status);
-        const payload = await response.json();
-        asArray(payload && payload.dados).forEach(function(item) {
-          const id = extractOfficialId(item);
-          if (!id) return;
-          const existing = rows.get(id);
-          const scored = scoreSearchItem(item, [k]);
-          const matched = existing
-            ? Array.from(new Set(existing.matched_terms.concat(scored.matched)))
-            : scored.matched;
-          const score = existing ? Math.max(existing.score, scored.score) : scored.score;
-          rows.set(id, normalizeAutomaticItem("camara", item, matched, score, verificationId));
-        });
+        let page = 1;
+        while (page <= 20) {
+          const url =
+            "https://dadosabertos.camara.leg.br/api/v2/proposicoes" +
+            "?keywords=" + encodeURIComponent(k.termo) +
+            "&dataApresentacaoInicio=" + encodeURIComponent(startDate) +
+            "&dataApresentacaoFim=" + encodeURIComponent(diagnostics.endDate) +
+            "&itens=30&pagina=" + page +
+            "&ordem=DESC&ordenarPor=id";
+          const response = await fetch(url, {
+            headers: {
+              accept: "application/json",
+              "user-agent": "MonitorLegislativo/1.0"
+            }
+          });
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          const payload = await response.json();
+          const data = asArray(payload && payload.dados);
+          diagnostics.pages++;
+          diagnostics.rawResults += data.length;
+
+          data.forEach(function(item) {
+            const id = extractOfficialId(item);
+            if (!id) return;
+            const existing = rows.get(id);
+            const scored = scoreSearchItem(item, [k]);
+            const matched = existing
+              ? Array.from(new Set(existing.matched_terms.concat(scored.matched)))
+              : scored.matched;
+            const score = existing ? Math.max(existing.score, scored.score) : scored.score;
+            rows.set(id, normalizeAutomaticItem("camara", item, matched, score, verificationId));
+          });
+
+          const links = asArray(payload && payload.links);
+          const hasNext = links.some(function(link) {
+            return norm(link && link.rel) === "next" && clean(link && link.href);
+          });
+          if (!hasNext || data.length === 0 || data.length < 30) break;
+          page++;
+        }
       } catch (error) {
+        diagnostics.failedRequests++;
         errors.push(k.termo + ": " + (error instanceof Error ? error.message : String(error)));
       }
     }));
   }
-  return { results: Array.from(rows.values()), startDate, errors };
+
+  diagnostics.matchedResults = rows.size;
+  if (diagnostics.requests && diagnostics.failedRequests === diagnostics.requests) {
+    throw new Error("Câmara: todas as consultas por termo falharam. " + errors.join(" | "));
+  }
+  return { results: Array.from(rows.values()), startDate, endDate: diagnostics.endDate, errors, diagnostics };
 }
 
 async function automaticSearchSenado(keywords, verificationId) {
@@ -1541,7 +1575,13 @@ async function saveAutomaticSearchResults(verificationId, fonte, responsible, pr
     source_id: source.id,
     source_code: code,
     query: keywordsText,
-    parameters: { mode: "automatic", terms: keywords.map(function(k){ return k.termo; }) },
+    parameters: {
+      mode: "automatic",
+      terms: keywords.map(function(k){ return k.termo; }),
+      diagnostico: providerResponse.diagnostico || null,
+      inicio: providerResponse.startDate || null,
+      fim: providerResponse.endDate || today()
+    },
     responsible: clean(responsible),
     search_date: today(),
     search_time: now(),
@@ -1552,7 +1592,7 @@ async function saveAutomaticSearchResults(verificationId, fonte, responsible, pr
     results_found: saved.length,
     observation: providerErrors.length
       ? "Pesquisa automática com pendências: " + providerErrors.join(" | ")
-      : "Pesquisa automática."
+      : "Pesquisa automática concluída e validada."
   };
   if (existingSearch) await updateRow("manual_searches", existingSearch.id, manualValue);
   else await insertRow("manual_searches", manualValue);
@@ -1561,6 +1601,7 @@ async function saveAutomaticSearchResults(verificationId, fonte, responsible, pr
     fonte,
     encontrados: saved.length,
     erros: providerErrors,
+    diagnostico: providerResponse.diagnostico || null,
     resultados: await getAutomaticSearchResults(verificationId, fonte)
   };
 }
@@ -1676,11 +1717,18 @@ async function getLastAutomaticSearchDate(sourceCodeValue) {
 function searchStartDate(lastDate, fallbackDays) {
   const fallback = new Date(Date.now() - fallbackDays * 86400000);
   if (!lastDate) return fallback.toISOString().slice(0, 10);
+
+  let iso = "";
   const m = String(lastDate).match(/(\d{4})-(\d{2})-(\d{2})/);
-  if (m) return m[1] + "-" + m[2] + "-" + m[3];
+  if (m) iso = m[1] + "-" + m[2] + "-" + m[3];
   const br = String(lastDate).match(/(\d{2})\/(\d{2})\/(\d{4})/);
-  if (br) return br[3] + "-" + br[2] + "-" + br[1];
-  return fallback.toISOString().slice(0, 10);
+  if (!iso && br) iso = br[3] + "-" + br[2] + "-" + br[1];
+  if (!iso) return fallback.toISOString().slice(0, 10);
+
+  // Reabre um dia da última consulta para não perder matérias na fronteira.
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 async function activeKeywords() {
