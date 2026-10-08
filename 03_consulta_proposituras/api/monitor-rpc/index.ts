@@ -1065,6 +1065,17 @@ function normalizeAutomaticItem(sourceCodeValue, item, matchedTerms, score, veri
   let title = deepField(item, ["titulo", "Titulo", "DescricaoMateria", "descricaoMateria", "ApelidoMateria", "apelidoMateria"]);
   let url = deepField(item, ["url", "Url", "uri", "Uri", "Link"]);
 
+  if (sourceCodeValue === "senado" && item && typeof item === "object") {
+    type = clean(item.Sigla || item.sigla || type);
+    numberText = clean(item.Numero || item.numero || numberText);
+    yearText = clean(item.Ano || item.ano || yearText);
+    officialId = String(item.Codigo || item.codigo || officialId || "");
+    ementa = clean(item.Ementa || item.ementa || ementa);
+    author = clean(item.Autor || item.autor || author);
+    title = clean(item.DescricaoIdentificacao || item.descricaoIdentificacao || title || ementa);
+    url = clean(item.UrlDetalheMateria || item.urlDetalheMateria || url);
+  }
+
   if (sourceCodeValue === "camara") {
     if (!url && officialId) {
       url = "https://www.camara.leg.br/proposicoesWeb/fichadetramitacao?idProposicao=" + encodeURIComponent(officialId);
@@ -1268,14 +1279,21 @@ async function getAutomaticSearchResults(verificationId, fonte) {
 
   const propositions = await allRows("propositions");
   const candidates = await allRows("candidates");
+  const propIdKeys = new Set(propositions.filter(function(p){return String(p.monitor_status || "Monitorar") !== "Arquivar";}).map(function(p){
+    return norm([p.source_code,p.official_id].join("|"));
+  }));
   const propKeys = new Set(propositions.filter(function(p){return String(p.monitor_status || "Monitorar") !== "Arquivar";}).map(function(p){
     return norm([p.source_code,p.type,p.number_text,p.year_text].join("|"));
+  }));
+  const candIdKeys = new Set(candidates.filter(function(c){return String(c.status || "Pendente") === "Pendente";}).map(function(c){
+    return norm([c.source_code,c.official_id].join("|"));
   }));
   const candKeys = new Set(candidates.filter(function(c){return String(c.status || "Pendente") === "Pendente";}).map(function(c){
     return norm([c.source_code,c.type,c.number_text,c.year_text].join("|"));
   }));
 
   return (r.data || []).map(function(x) {
+    const idKey = norm([x.source_code,x.official_id].join("|"));
     const key = norm([x.source_code,x.type,x.number_text,x.year_text].join("|"));
     return {
       id: x.id,
@@ -1291,7 +1309,9 @@ async function getAutomaticSearchResults(verificationId, fonte) {
       link: x.official_url || "",
       termos: x.matched_terms || [],
       score: Number(x.score || 0),
-      status: propKeys.has(key) ? "Já monitorada" : (candKeys.has(key) ? "Em avaliação" : x.status || "Nova"),
+      status: propIdKeys.has(idKey) || propKeys.has(key)
+        ? "Já monitorada"
+        : (candIdKeys.has(idKey) || candKeys.has(key) ? "Em avaliação" : x.status || "Nova"),
       descobertoEm: x.discovered_at,
       updatedAt: x.updated_at
     };
@@ -1375,15 +1395,19 @@ async function promoteAutomaticSearchResult(id, verificationId, responsible) {
   const key = norm([r.source_code,r.type,r.number_text,r.year_text].join("|"));
   const props = await allRows("propositions");
   const already = props.some(function(p){
-    return norm([p.source_code,p.type,p.number_text,p.year_text].join("|")) === key &&
-      String(p.monitor_status || "Monitorar") !== "Arquivar";
+    const sameId = r.official_id && p.official_id &&
+      norm([p.source_code,p.official_id].join("|")) === norm([r.source_code,r.official_id].join("|"));
+    const sameKey = norm([p.source_code,p.type,p.number_text,p.year_text].join("|")) === key;
+    return (sameId || sameKey) && String(p.monitor_status || "Monitorar") !== "Arquivar";
   });
   if (already) throw new Error("Essa propositura já consta no monitoramento.");
 
   const candidates = await allRows("candidates");
   const pending = candidates.some(function(c){
-    return norm([c.source_code,c.type,c.number_text,c.year_text].join("|")) === key &&
-      String(c.status || "Pendente") === "Pendente";
+    const sameId = r.official_id && c.official_id &&
+      norm([c.source_code,c.official_id].join("|")) === norm([r.source_code,r.official_id].join("|"));
+    const sameKey = norm([c.source_code,c.type,c.number_text,c.year_text].join("|")) === key;
+    return (sameId || sameKey) && String(c.status || "Pendente") === "Pendente";
   });
   if (pending) throw new Error("Essa propositura já está em avaliação.");
 
@@ -1492,7 +1516,9 @@ async function guidedSearch(verificationId) {
   }
 
   return {
-    palavras: await activeKeywords(),
+    palavras: (await activeKeywords()).map(function(k) {
+      return k.termo;
+    }),
     fontes: [
       house(
         "Câmara",
