@@ -712,6 +712,27 @@ async function applyCurrent(verificationId, proposition, current, result) {
   await updateRow("propositions", proposition.id, patch);
 }
 
+async function fetchCamaraWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(function() {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(url, {
+      headers: { accept: "application/json" },
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error("tempo limite excedido após " + timeoutMs / 1000 + "s");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function verifyCamara(verificationId) {
   const props = (await allRows("propositions")).filter(function(p) {
     return p.source_code === "camara" &&
@@ -736,10 +757,10 @@ async function verifyCamara(verificationId) {
         throw new Error("Sem ID oficial");
       }
 
-      const r = await fetch(
+      const r = await fetchCamaraWithTimeout(
         "https://dadosabertos.camara.leg.br/api/v2/proposicoes/" +
         encodeURIComponent(p.official_id),
-        { headers: { accept: "application/json" } }
+        12000
       );
 
       if (!r.ok) throw new Error("HTTP " + r.status);
