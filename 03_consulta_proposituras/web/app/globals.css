@@ -260,3 +260,37 @@
 @keyframes globalSpin{to{transform:rotate(360deg)}}
 @media(max-width:850px){.global-loading::before{width:230px}.global-loading #global-loading-text{max-width:160px}}
 @media print{.global-loading{display:none!important}}
+
+/* Pesquisa automática */
+.source-action-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.source-action-row .link-btn{white-space:nowrap;text-align:center}
+.terms-managed{background:#f8fafc}
+.terms-help{margin:8px 0 0;color:var(--muted);font-size:10px}
+.automatic-summary{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 0;border-top:1px solid #edf1f5;border-bottom:1px solid #edf1f5;font-size:11px;color:#52627a}
+.automatic-summary b{color:var(--navy)}
+.automatic-results{margin-top:10px}
+.auto-result-list{display:grid;gap:8px}
+.auto-result{display:grid;grid-template-columns:1fr 220px;gap:12px;padding:12px;border:1px solid #e1e7ef;border-radius:9px;background:#fff}
+.auto-result.already{background:#fbfcfd}
+.auto-result.ignored{opacity:.72}
+.auto-result-main h4{margin:6px 0 5px;font-size:13px}
+.auto-result-main p{margin:0;font-size:11px;line-height:1.45;color:#43546c}
+.auto-result-main small{display:block;margin-top:6px;color:var(--muted)}
+.auto-result-title{display:flex;align-items:center;gap:6px}
+.auto-score{font-size:9px;font-weight:800;color:#52627a;padding:4px 6px;border-radius:10px;background:#f1f4f8}
+.auto-terms{margin-top:8px}
+.auto-result-side{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:7px}
+.auto-result-side .primary,.auto-result-side .secondary{width:100%;text-align:center}
+.automatic-source-list{display:grid;gap:12px;margin-top:16px}
+.automatic-source-panel{border:1px solid var(--line);border-radius:11px;padding:14px;background:#fff}
+.automatic-source-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}
+.automatic-source-head h3{margin:0 0 3px}
+.automatic-source-head p{margin:0;color:var(--muted);font-size:11px}
+.compact-empty{padding:12px;border:1px dashed #d9e1eb;border-radius:8px;color:var(--muted);font-size:11px}
+@media(max-width:900px){
+  .auto-result{grid-template-columns:1fr}
+  .auto-result-side{display:grid;grid-template-columns:1fr 1fr}
+  .auto-result-side .source-status{grid-column:1/-1;justify-self:start}
+  .automatic-source-head{display:block}
+  .automatic-source-head .source-action-row{margin-top:10px}
+}
