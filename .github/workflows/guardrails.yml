@@ -1,0 +1,42 @@
+name: Guardrails
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    name: Repository policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Block direct main branch pushes
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "Direct push to main is forbidden by repository policy."
+          exit 1
+
+      - name: Validate branch policy
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$HEAD_REF" = "main" ]; then
+            echo "A pull request cannot originate from main."
+            exit 1
+          fi
+          echo "PR branch: $HEAD_REF -> $BASE_REF"
+
+      - name: Block credential-like files
+        run: |
+          files="$(git diff --name-only HEAD^ HEAD 2>/dev/null || true)"
+          forbidden='(^|/)(\.clasprc\.json|\.env|credentials\.json|service-account[^/]*\.json)$|\.(pem|key|p12)$'
+          if printf '%s\n' "$files" | grep -Eq "$forbidden"; then
+            echo "Credential-like file detected in the change."
+            exit 1
+          fi
