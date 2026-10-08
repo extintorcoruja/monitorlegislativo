@@ -2139,6 +2139,21 @@ async function handle(fn, args) {
         String(args[3] || "")
       );
 
+    case "getInicioPesquisaAutomatica": {
+      const fonte = String(args[1] || "");
+      const code = sourceCode(fonte);
+      const lastDate = await getLastAutomaticSearchDate(code);
+      return searchStartDate(lastDate, 45);
+    }
+
+    case "salvarResultadosPesquisaAutomatica":
+      return saveAutomaticSearchResults(
+        String(args[1] || ""),
+        String(args[2] || ""),
+        String(args[3] || ""),
+        args[4] || { results: [], errors: [] }
+      );
+
     case "getResultadosPesquisaAutomatica":
       return getAutomaticSearchResults(String(args[1] || ""), String(args[2] || ""));
 
