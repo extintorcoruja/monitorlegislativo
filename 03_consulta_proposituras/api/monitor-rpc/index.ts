@@ -1171,11 +1171,17 @@ async function automaticSearchSenado(keywords, verificationId) {
       const id = extractOfficialId(item);
       if (!id) return;
       const existing = rows.get(id);
-      const scored = scoreSearchItem(item, keywords);
+      // O endpoint do Senado já filtrou a matéria pelo termo desta iteração.
+      // Portanto, o termo da consulta é evidência de correspondência mesmo quando
+      // a API não devolve a palavra no resumo/ementa retornado.
+      const scored = scoreSearchItem(item, [k]);
+      const matchedFromSource = scored.matched.length ? scored.matched : [k.termo];
       const matched = existing
-        ? Array.from(new Set(existing.matched_terms.concat(scored.matched)))
-        : scored.matched;
-      const score = existing ? Math.max(existing.score, scored.score) : scored.score;
+        ? Array.from(new Set(existing.matched_terms.concat(matchedFromSource)))
+        : matchedFromSource;
+      const score = existing
+        ? Math.max(existing.score, Number(k.peso || 5), scored.score)
+        : Math.max(Number(k.peso || 5), scored.score);
       rows.set(id, normalizeAutomaticItem("senado", item, matched, score, verificationId));
     });
   }));
@@ -1287,27 +1293,53 @@ async function automaticSearchAlesp(keywords, verificationId) {
 
   const zipBytes = new Uint8Array(await response.arrayBuffer());
   const files = unzipSync(zipBytes);
-  const fileName = Object.keys(files).find(function(name) {
-    return /proposituras\\.xml$/i.test(name);
+  const fileNames = Object.keys(files);
+  let fileName = fileNames.find(function(name) {
+    return /(^|[\\/])proposituras?\.xml$/i.test(name.trim());
   });
-  if (!fileName) throw new Error("ALESP: proposituras.xml não encontrado no ZIP.");
+
+  // A ALESP documenta o recurso como proposituras.xml, mas não devemos
+  // depender do caminho exato armazenado dentro do ZIP.
+  if (!fileName) {
+    fileName = fileNames.find(function(name) {
+      return /propositur/i.test(name) && /\.xml$/i.test(name);
+    });
+  }
+
+  // Último fallback: identifica o XML pelo conteúdo, não pelo nome.
+  if (!fileName) {
+    const xmlCandidate = fileNames.find(function(name) {
+      if (!/\.xml$/i.test(name)) return false;
+      const candidateText = new TextDecoder("utf-8").decode(files[name]);
+      return /<propositura(?:\\s|>)/i.test(candidateText);
+    });
+    fileName = xmlCandidate || "";
+  }
+
+  if (!fileName) {
+    throw new Error(
+      "ALESP: XML de proposituras não identificado no ZIP. Arquivos encontrados: " +
+      fileNames.slice(0, 20).join(", ")
+    );
+  }
 
   const xml = new TextDecoder("utf-8").decode(files[fileName]);
   const lastDate = await getLastAutomaticSearchDate("alesp");
   const startDate = searchStartDate(lastDate, 45);
 
   const rows = new Map();
-  let pos = 0;
-  const openTag = "<propositura";
+  const openTagRe = /<propositura(?:\s[^>]*)?>/gi;
   const closeTag = "</propositura>";
+  let pos = 0;
   while (true) {
-    const open = xml.toLowerCase().indexOf(openTag, pos);
-    if (open < 0) break;
-    const openEnd = xml.indexOf(">", open);
-    if (openEnd < 0) break;
+    openTagRe.lastIndex = pos;
+    const openMatch = openTagRe.exec(xml);
+    if (!openMatch) break;
+    const open = openMatch.index;
+    const openEnd = open + openMatch[0].length;
     const end = xml.toLowerCase().indexOf(closeTag, openEnd);
     if (end < 0) break;
-    const block = xml.slice(openEnd + 1, end);
+    const block = xml.slice(openEnd, end);
     pos = end + closeTag.length;
 
     const entered = alespDateToIso(xmlTag(block, ["DtEntradaSistema", "DataEntrada", "DtEntrada"]));
