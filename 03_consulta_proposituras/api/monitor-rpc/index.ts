@@ -1,6 +1,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { unzipSync } from "npm:fflate";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
@@ -1110,32 +1111,44 @@ function normalizeAutomaticItem(sourceCodeValue, item, matchedTerms, score, veri
 
 async function automaticSearchCamara(keywords, verificationId) {
   const rows = new Map();
-  for (let start = 0; start < keywords.length; start += 3) {
-    const keywordBatch = keywords.slice(start, start + 3);
+  const errors = [];
+  const lastDate = await getLastAutomaticSearchDate("camara");
+  const startDate = searchStartDate(lastDate, 45);
+  for (let start = 0; start < keywords.length; start += 2) {
+    const keywordBatch = keywords.slice(start, start + 2);
     await Promise.all(keywordBatch.map(async function(k) {
-    const url =
-      "https://dadosabertos.camara.leg.br/api/v2/proposicoes" +
-      "?keywords=" + encodeURIComponent(k.termo) +
-      "&dataApresentacaoInicio=" + encodeURIComponent(new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10)) +
-      "&dataApresentacaoFim=" + encodeURIComponent(today()) +
-      "&itens=50&pagina=1&ordem=DESC&ordenarPor=id";
-    const response = await fetch(url, { headers: { accept: "application/json" } });
-    if (!response.ok) throw new Error("Câmara: HTTP " + response.status + " ao pesquisar " + k.termo);
-    const payload = await response.json();
-    asArray(payload && payload.dados).forEach(function(item) {
-      const id = extractOfficialId(item);
-      if (!id) return;
-      const existing = rows.get(id);
-      const scored = scoreSearchItem(item, keywords);
-      const matched = existing
-        ? Array.from(new Set(existing.matched_terms.concat(scored.matched)))
-        : scored.matched;
-      const score = existing ? Math.max(existing.score, scored.score) : scored.score;
-      rows.set(id, normalizeAutomaticItem("camara", item, matched, score, verificationId));
-    });
+      try {
+        const url =
+          "https://dadosabertos.camara.leg.br/api/v2/proposicoes" +
+          "?keywords=" + encodeURIComponent(k.termo) +
+          "&dataApresentacaoInicio=" + encodeURIComponent(startDate) +
+          "&dataApresentacaoFim=" + encodeURIComponent(today()) +
+          "&itens=30&pagina=1&ordem=DESC&ordenarPor=id";
+        const response = await fetch(url, {
+          headers: {
+            accept: "application/json",
+            "user-agent": "MonitorLegislativo/1.0"
+          }
+        });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        const payload = await response.json();
+        asArray(payload && payload.dados).forEach(function(item) {
+          const id = extractOfficialId(item);
+          if (!id) return;
+          const existing = rows.get(id);
+          const scored = scoreSearchItem(item, [k]);
+          const matched = existing
+            ? Array.from(new Set(existing.matched_terms.concat(scored.matched)))
+            : scored.matched;
+          const score = existing ? Math.max(existing.score, scored.score) : scored.score;
+          rows.set(id, normalizeAutomaticItem("camara", item, matched, score, verificationId));
+        });
+      } catch (error) {
+        errors.push(k.termo + ": " + (error instanceof Error ? error.message : String(error)));
+      }
     }));
   }
-  return Array.from(rows.values());
+  return { results: Array.from(rows.values()), startDate, errors };
 }
 
 async function automaticSearchSenado(keywords, verificationId) {
@@ -1197,80 +1210,121 @@ function normalizeXmlRecord(wrapper) {
   };
 }
 
-async function automaticSearchAlesp(keywords, verificationId) {
-  const urls = [
-    "https://www3.al.sp.gov.br/repositorio/dados-abertos/output/json/proposituras.json",
-    "https://www.al.sp.gov.br/repositorioDados/processo_legislativo/proposituras.xml"
-  ];
-  let payload = null;
-  let usedUrl = "";
-  let lastError = null;
+function parseAlespPropositionXmlBlock(block, keywords, verificationId) {
+  const id = xmlTag(block, ["IdDocumento", "IdPropositura", "Codigo", "idDocumento", "idPropositura"]);
+  if (!id) return null;
 
-  for (const url of urls) {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error("ALESP: HTTP " + response.status);
-      const contentType = String(response.headers.get("content-type") || "");
-      const body = await response.text();
-      usedUrl = url;
-      if (contentType.includes("json") || url.endsWith(".json")) {
-        payload = JSON.parse(body);
-      } else {
-        payload = body;
-      }
-      break;
-    } catch (error) {
-      lastError = error;
+  const type = xmlTag(block, [
+    "SiglaNatureza", "Natureza", "Tipo", "SiglaTipo",
+    "DescricaoNatureza", "DescricaoTipo"
+  ]);
+  const numberText = xmlTag(block, ["NroLegislativo", "Numero", "NumeroPropositura", "numero"]);
+  const yearText = xmlTag(block, ["AnoLegislativo", "Ano", "AnoPropositura", "ano"]);
+  const ementa = xmlTag(block, ["Ementa", "DescricaoEmenta", "Descricao", "ementa"]);
+  const author = xmlTag(block, ["Autor", "NomeAutor", "autor"]);
+  const title = ementa || xmlTag(block, ["Titulo", "DescricaoPropositura"]);
+  const entered = xmlTag(block, ["DtEntradaSistema", "DataEntrada", "DtEntrada"]);
+
+  const normalizedText = norm(block);
+  const matched = [];
+  let score = 0;
+  keywords.forEach(function(k) {
+    const term = norm(k.termo);
+    if (term && normalizedText.includes(term)) {
+      matched.push(k.termo);
+      score += Number(k.peso || 5);
     }
-  }
+  });
+  if (!matched.length) return null;
 
-  if (payload == null) {
-    throw new Error(lastError instanceof Error ? lastError.message : "Falha ao obter dados da ALESP.");
-  }
+  let officialUrl = "";
+  if (id) officialUrl = "https://www.al.sp.gov.br/propositura/?id=" + encodeURIComponent(id);
+
+  return {
+    verification_id: verificationId || null,
+    source_code: "alesp",
+    source_label: "ALESP",
+    official_id: String(id),
+    type: clean(type),
+    number_text: clean(numberText),
+    year_text: clean(yearText),
+    title: clean(title),
+    ementa: clean(ementa),
+    author_text: clean(author),
+    official_url: officialUrl,
+    matched_terms: matched,
+    score,
+    raw: {
+      IdDocumento: id,
+      Tipo: type,
+      NroLegislativo: numberText,
+      AnoLegislativo: yearText,
+      Ementa: ementa,
+      Autor: author,
+      DtEntradaSistema: entered
+    }
+  };
+}
+
+function alespDateToIso(value) {
+  const v = clean(value);
+  let m = v.match(/(\\d{4})[-\\/](\\d{2})[-\\/](\\d{2})/);
+  if (m) return m[1] + "-" + m[2] + "-" + m[3];
+  m = v.match(/(\\d{2})[-\\/](\\d{2})[-\\/](\\d{4})/);
+  if (m) return m[3] + "-" + m[2] + "-" + m[1];
+  return "";
+}
+
+async function automaticSearchAlesp(keywords, verificationId) {
+  const zipUrl = "https://www.al.sp.gov.br/repositorioDados/processo_legislativo/proposituras.zip";
+  const response = await fetch(zipUrl, {
+    headers: {
+      accept: "application/zip, application/octet-stream",
+      "user-agent": "MonitorLegislativo/1.0"
+    }
+  });
+  if (!response.ok) throw new Error("ALESP: HTTP " + response.status + " ao baixar proposituras.zip");
+
+  const zipBytes = new Uint8Array(await response.arrayBuffer());
+  const files = unzipSync(zipBytes);
+  const fileName = Object.keys(files).find(function(name) {
+    return /proposituras\\.xml$/i.test(name);
+  });
+  if (!fileName) throw new Error("ALESP: proposituras.xml não encontrado no ZIP.");
+
+  const xml = new TextDecoder("utf-8").decode(files[fileName]);
+  const lastDate = await getLastAutomaticSearchDate("alesp");
+  const startDate = searchStartDate(lastDate, 45);
 
   const rows = new Map();
-  const items = typeof payload === "string"
-    ? xmlRecords(payload).map(normalizeXmlRecord)
-    : (function() {
-        const found = [];
-        function walk(node, depth) {
-          if (!node || depth > 5) return;
-          if (Array.isArray(node)) {
-            node.forEach(function(x) { walk(x, depth + 1); });
-            return;
-          }
-          if (typeof node !== "object") return;
-          const id = extractOfficialId(node);
-          const text = buildSearchText(node);
-          if (id && (deepField(node, ["ementa","Ementa","Descricao","descricao"]) || deepField(node, ["Numero","numero"]))) {
-            found.push(node);
-          }
-          Object.keys(node).forEach(function(k) {
-            if (node[k] && typeof node[k] === "object") walk(node[k], depth + 1);
-          });
-        }
-        walk(payload, 0);
-        return found;
-      })();
+  let pos = 0;
+  const openTag = "<propositura";
+  const closeTag = "</propositura>";
+  while (true) {
+    const open = xml.toLowerCase().indexOf(openTag, pos);
+    if (open < 0) break;
+    const openEnd = xml.indexOf(">", open);
+    if (openEnd < 0) break;
+    const end = xml.toLowerCase().indexOf(closeTag, openEnd);
+    if (end < 0) break;
+    const block = xml.slice(openEnd + 1, end);
+    pos = end + closeTag.length;
 
-  items.forEach(function(item) {
-    const scored = scoreSearchItem(item, keywords);
-    if (!scored.matched.length) return;
-    const id = extractOfficialId(item);
-    if (!id) return;
-    const existing = rows.get(id);
-    const normalized = normalizeAutomaticItem("alesp", item, scored.matched, scored.score, verificationId);
-    if (typeof item === "object" && item.__xml) {
-      normalized.raw = item;
-    }
+    const entered = alespDateToIso(xmlTag(block, ["DtEntradaSistema", "DataEntrada", "DtEntrada"]));
+    if (entered && entered < startDate) continue;
+
+    const item = parseAlespPropositionXmlBlock(block, keywords, verificationId);
+    if (!item) continue;
+
+    const existing = rows.get(item.official_id);
     if (existing) {
-      normalized.matched_terms = Array.from(new Set(existing.matched_terms.concat(normalized.matched_terms)));
-      normalized.score = Math.max(existing.score, normalized.score);
+      item.matched_terms = Array.from(new Set(existing.matched_terms.concat(item.matched_terms)));
+      item.score = Math.max(existing.score, item.score);
     }
-    rows.set(id, normalized);
-  });
+    rows.set(item.official_id, item);
+  }
 
-  return Array.from(rows.values());
+  return { results: Array.from(rows.values()), startDate, errors: [] };
 }
 
 async function getAutomaticSearchResults(verificationId, fonte) {
@@ -1328,10 +1382,13 @@ async function runAutomaticSearch(verificationId, fonte, responsible) {
   const source = (await allRows("sources")).find(function(s){ return s.code === code; });
   if (!source) throw new Error("Fonte legislativa não configurada: " + fonte);
 
-  let results;
-  if (code === "camara") results = await automaticSearchCamara(keywords, verificationId);
-  else if (code === "senado") results = await automaticSearchSenado(keywords, verificationId);
-  else results = await automaticSearchAlesp(keywords, verificationId);
+  let providerResponse;
+  if (code === "camara") providerResponse = await automaticSearchCamara(keywords, verificationId);
+  else if (code === "senado") providerResponse = { results: await automaticSearchSenado(keywords, verificationId), errors: [] };
+  else providerResponse = await automaticSearchAlesp(keywords, verificationId);
+
+  const results = providerResponse.results || [];
+  const providerErrors = providerResponse.errors || [];
 
   const saved = [];
   const rowsToSave = results.filter(function(item) {
@@ -1386,7 +1443,9 @@ async function runAutomaticSearch(verificationId, fonte, responsible) {
     keywords_text: keywordsText,
     result_count: saved.length,
     results_found: saved.length,
-    observation: "Pesquisa automática."
+    observation: providerErrors.length
+      ? "Pesquisa automática com pendências: " + providerErrors.join(" | ")
+      : "Pesquisa automática."
   };
   if (existingSearch) await updateRow("manual_searches", existingSearch.id, manualValue);
   else await insertRow("manual_searches", manualValue);
@@ -1474,6 +1533,31 @@ async function searchPage() {
       }
     ]
   };
+}
+
+async function getLastAutomaticSearchDate(sourceCodeValue) {
+  const r = await db.from("manual_searches")
+    .select("search_date,executed_at,parameters,status")
+    .eq("source_code", sourceCodeValue)
+    .eq("status", "Concluída")
+    .order("executed_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (r.error) throw r.error;
+  if (!r.data) return "";
+  const params = r.data.parameters || {};
+  if (params.mode && params.mode !== "automatic") return "";
+  return clean(r.data.search_date || "");
+}
+
+function searchStartDate(lastDate, fallbackDays) {
+  const fallback = new Date(Date.now() - fallbackDays * 86400000);
+  if (!lastDate) return fallback.toISOString().slice(0, 10);
+  const m = String(lastDate).match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return m[1] + "-" + m[2] + "-" + m[3];
+  const br = String(lastDate).match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  if (br) return br[3] + "-" + br[2] + "-" + br[1];
+  return fallback.toISOString().slice(0, 10);
 }
 
 async function activeKeywords() {
