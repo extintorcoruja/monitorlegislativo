@@ -1311,7 +1311,9 @@ async function automaticSearchAlesp(keywords, verificationId) {
     pos = end + closeTag.length;
 
     const entered = alespDateToIso(xmlTag(block, ["DtEntradaSistema", "DataEntrada", "DtEntrada"]));
+    const year = clean(xmlTag(block, ["AnoLegislativo", "Ano", "AnoPropositura", "ano"]));
     if (entered && entered < startDate) continue;
+    if (!entered && /^\d{4}$/.test(year) && year < startDate.slice(0, 4)) continue;
 
     const item = parseAlespPropositionXmlBlock(block, keywords, verificationId);
     if (!item) continue;
@@ -1453,6 +1455,7 @@ async function runAutomaticSearch(verificationId, fonte, responsible) {
   return {
     fonte,
     encontrados: saved.length,
+    erros: providerErrors,
     resultados: await getAutomaticSearchResults(verificationId, fonte)
   };
 }
