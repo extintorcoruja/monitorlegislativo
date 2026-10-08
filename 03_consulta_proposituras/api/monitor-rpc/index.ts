@@ -1311,7 +1311,7 @@ async function automaticSearchAlesp(keywords, verificationId) {
     const xmlCandidate = fileNames.find(function(name) {
       if (!/\.xml$/i.test(name)) return false;
       const candidateText = new TextDecoder("utf-8").decode(files[name]);
-      return /<propositura(?:\\s|>)/i.test(candidateText);
+      return /<propositura(?:\s|>)/i.test(candidateText);
     });
     fileName = xmlCandidate || "";
   }
