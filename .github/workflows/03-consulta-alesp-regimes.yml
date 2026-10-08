@@ -1,0 +1,30 @@
+name: ALESP regimes sob demanda
+
+on:
+  workflow_dispatch:
+    inputs:
+      ids:
+        description: IDs ALESP separados por vírgula
+        required: true
+        type: string
+      request_id:
+        description: Identificador da solicitação
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Process ALESP regimes
+        env:
+          ALESP_IDS: ${{ inputs.ids }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          INTEGRATION_SECRET: ${{ secrets.INTEGRATION_SECRET }}
+          ALESP_CALLBACK_URL: ${{ secrets.ALESP_CALLBACK_URL }}
+        run: python 03_consulta_proposituras/jobs/alesp/process_regimes.py
