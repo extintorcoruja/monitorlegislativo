@@ -1487,18 +1487,12 @@ async function getAutomaticSearchResults(verificationId, fonte) {
   });
 }
 
-async function runAutomaticSearch(verificationId, fonte, responsible) {
-  const keywords = await activeKeywords();
-  if (!keywords.length) throw new Error("Nenhum termo de apoio ativo.");
+async function saveAutomaticSearchResults(verificationId, fonte, responsible, providerResponse) {
   const code = sourceCode(fonte);
   const source = (await allRows("sources")).find(function(s){ return s.code === code; });
   if (!source) throw new Error("Fonte legislativa não configurada: " + fonte);
 
-  let providerResponse;
-  if (code === "camara") providerResponse = await automaticSearchCamara(keywords, verificationId);
-  else if (code === "senado") providerResponse = { results: await automaticSearchSenado(keywords, verificationId), errors: [] };
-  else providerResponse = await automaticSearchAlesp(keywords, verificationId);
-
+  const keywords = await activeKeywords();
   const results = providerResponse.results || [];
   const providerErrors = providerResponse.errors || [];
 
@@ -1526,6 +1520,7 @@ async function runAutomaticSearch(verificationId, fonte, responsible) {
       raw: item.raw || {}
     };
   });
+
   for (let start = 0; start < rowsToSave.length; start += 50) {
     const batch = rowsToSave.slice(start, start + 50);
     const up = await db.from("automatic_search_results")
@@ -1568,6 +1563,21 @@ async function runAutomaticSearch(verificationId, fonte, responsible) {
     erros: providerErrors,
     resultados: await getAutomaticSearchResults(verificationId, fonte)
   };
+}
+
+async function runAutomaticSearch(verificationId, fonte, responsible) {
+  const keywords = await activeKeywords();
+  if (!keywords.length) throw new Error("Nenhum termo de apoio ativo.");
+  const code = sourceCode(fonte);
+  const source = (await allRows("sources")).find(function(s){ return s.code === code; });
+  if (!source) throw new Error("Fonte legislativa não configurada: " + fonte);
+
+  let providerResponse;
+  if (code === "camara") providerResponse = await automaticSearchCamara(keywords, verificationId);
+  else if (code === "senado") providerResponse = { results: await automaticSearchSenado(keywords, verificationId), errors: [] };
+  else providerResponse = await automaticSearchAlesp(keywords, verificationId);
+
+  return saveAutomaticSearchResults(verificationId, fonte, responsible, providerResponse);
 }
 
 async function promoteAutomaticSearchResult(id, verificationId, responsible) {
