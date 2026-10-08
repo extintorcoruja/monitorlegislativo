@@ -1298,7 +1298,7 @@ async function getAutomaticSearchResults(verificationId, fonte) {
   });
 }
 
-async function runAutomaticSearch(verificationId, fonte) {
+async function runAutomaticSearch(verificationId, fonte, responsible) {
   const keywords = await activeKeywords();
   if (!keywords.length) throw new Error("Nenhum termo de apoio ativo.");
   const code = sourceCode(fonte);
@@ -1349,7 +1349,7 @@ async function runAutomaticSearch(verificationId, fonte) {
     source_code: code,
     query: keywordsText,
     parameters: { mode: "automatic", terms: keywords.map(function(k){ return k.termo; }) },
-    responsible: null,
+    responsible: clean(responsible),
     search_date: today(),
     search_time: now(),
     executed_at: now(),
@@ -1891,7 +1891,11 @@ async function handle(fn, args) {
       return searchPage();
 
     case "buscarNovasPropositurasAutomatica":
-      return runAutomaticSearch(String(args[1] || ""), String(args[2] || ""));
+      return runAutomaticSearch(
+        String(args[1] || ""),
+        String(args[2] || ""),
+        String(args[3] || "")
+      );
 
     case "getResultadosPesquisaAutomatica":
       return getAutomaticSearchResults(String(args[1] || ""), String(args[2] || ""));
