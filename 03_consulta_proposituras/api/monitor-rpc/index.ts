@@ -1,7 +1,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { unzipSync } from "npm:fflate";
+import { Unzip, UnzipInflate } from "npm:fflate";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
@@ -1289,66 +1289,30 @@ async function automaticSearchAlesp(keywords, verificationId) {
       "user-agent": "MonitorLegislativo/1.0"
     }
   });
-  if (!response.ok) throw new Error("ALESP: HTTP " + response.status + " ao baixar proposituras.zip");
-
-  const zipBytes = new Uint8Array(await response.arrayBuffer());
-  const files = unzipSync(zipBytes);
-  const fileNames = Object.keys(files);
-  let fileName = fileNames.find(function(name) {
-    return /(^|[\\/])proposituras?\.xml$/i.test(name.trim());
-  });
-
-  // A ALESP documenta o recurso como proposituras.xml, mas não devemos
-  // depender do caminho exato armazenado dentro do ZIP.
-  if (!fileName) {
-    fileName = fileNames.find(function(name) {
-      return /propositur/i.test(name) && /\.xml$/i.test(name);
-    });
+  if (!response.ok) {
+    throw new Error("ALESP: HTTP " + response.status + " ao baixar proposituras.zip");
+  }
+  if (!response.body) {
+    throw new Error("ALESP: a resposta do ZIP não possui corpo de leitura.");
   }
 
-  // Último fallback: identifica o XML pelo conteúdo, não pelo nome.
-  if (!fileName) {
-    const xmlCandidate = fileNames.find(function(name) {
-      if (!/\.xml$/i.test(name)) return false;
-      const candidateText = new TextDecoder("utf-8").decode(files[name]);
-      return /<propositura(?:\s|>)/i.test(candidateText);
-    });
-    fileName = xmlCandidate || "";
-  }
-
-  if (!fileName) {
-    throw new Error(
-      "ALESP: XML de proposituras não identificado no ZIP. Arquivos encontrados: " +
-      fileNames.slice(0, 20).join(", ")
-    );
-  }
-
-  const xml = new TextDecoder("utf-8").decode(files[fileName]);
   const lastDate = await getLastAutomaticSearchDate("alesp");
   const startDate = searchStartDate(lastDate, 45);
-
   const rows = new Map();
-  const openTagRe = /<propositura(?:\s[^>]*)?>/gi;
-  const closeTag = "</propositura>";
-  let pos = 0;
-  while (true) {
-    openTagRe.lastIndex = pos;
-    const openMatch = openTagRe.exec(xml);
-    if (!openMatch) break;
-    const open = openMatch.index;
-    const openEnd = open + openMatch[0].length;
-    const end = xml.toLowerCase().indexOf(closeTag, openEnd);
-    if (end < 0) break;
-    const block = xml.slice(openEnd, end);
-    pos = end + closeTag.length;
+  const fileNames = [];
+  let targetFound = false;
+  let targetStarted = false;
+  let xmlBuffer = "";
+  const decoder = new TextDecoder("utf-8");
 
+  function processBlock(block) {
     const entered = alespDateToIso(xmlTag(block, ["DtEntradaSistema", "DataEntrada", "DtEntrada"]));
     const year = clean(xmlTag(block, ["AnoLegislativo", "Ano", "AnoPropositura", "ano"]));
-    if (entered && entered < startDate) continue;
-    if (!entered && /^\d{4}$/.test(year) && year < startDate.slice(0, 4)) continue;
+    if (entered && entered < startDate) return;
+    if (!entered && /^\d{4}$/.test(year) && year < startDate.slice(0, 4)) return;
 
     const item = parseAlespPropositionXmlBlock(block, keywords, verificationId);
-    if (!item) continue;
+    if (!item) return;
 
     const existing = rows.get(item.official_id);
     if (existing) {
@@ -1356,6 +1320,108 @@ async function automaticSearchAlesp(keywords, verificationId) {
       item.score = Math.max(existing.score, item.score);
     }
     rows.set(item.official_id, item);
+  }
+
+  function processXmlText(text) {
+    xmlBuffer += text;
+    const openTagRe = /<propositura(?:\s[^>]*)?>/i;
+    const closeTag = "</propositura>";
+
+    while (true) {
+      const openMatch = openTagRe.exec(xmlBuffer);
+      if (!openMatch) {
+        if (xmlBuffer.length > 4096) xmlBuffer = xmlBuffer.slice(-4096);
+        return;
+      }
+
+      const openEnd = openMatch.index + openMatch[0].length;
+      const lower = xmlBuffer.toLowerCase();
+      const close = lower.indexOf(closeTag, openEnd);
+      if (close < 0) {
+        if (openMatch.index > 0) xmlBuffer = xmlBuffer.slice(openMatch.index);
+        return;
+      }
+
+      processBlock(xmlBuffer.slice(openEnd, close));
+      xmlBuffer = xmlBuffer.slice(close + closeTag.length);
+    }
+  }
+
+  const unzip = new Unzip();
+  unzip.register(UnzipInflate);
+
+  let streamError = null;
+  let targetPromiseResolve;
+  let targetPromiseReject;
+  const targetPromise = new Promise(function(resolve, reject) {
+    targetPromiseResolve = resolve;
+    targetPromiseReject = reject;
+  });
+
+  unzip.onfile = function(file) {
+    fileNames.push(file.name);
+
+    const normalizedName = file.name.replace(/\\/g, "/").trim();
+    const isTarget =
+      /(^|\/)proposituras?\.xml$/i.test(normalizedName) ||
+      (/\.xml$/i.test(normalizedName) && /propositur/i.test(normalizedName));
+
+    if (!isTarget) return;
+
+    targetFound = true;
+    file.ondata = function(err, chunk, final) {
+      if (err) {
+        streamError = err;
+        targetPromiseReject(err);
+        return;
+      }
+
+      try {
+        processXmlText(decoder.decode(chunk || new Uint8Array(), { stream: !final }));
+        if (final) {
+          processXmlText(decoder.decode());
+          targetStarted = true;
+          targetPromiseResolve();
+        }
+      } catch (error) {
+        streamError = error;
+        targetPromiseReject(error);
+      }
+    };
+
+    try {
+      file.start();
+    } catch (error) {
+      streamError = error;
+      targetPromiseReject(error);
+    }
+  };
+
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const part = await reader.read();
+      unzip.push(part.value || new Uint8Array(), Boolean(part.done));
+      if (part.done) break;
+    }
+  } catch (error) {
+    streamError = error;
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (streamError) throw streamError;
+  if (!targetFound) {
+    throw new Error(
+      "ALESP: XML de proposituras não identificado no ZIP. Arquivos encontrados: " +
+      fileNames.slice(0, 20).join(", ")
+    );
+  }
+
+  await targetPromise;
+
+  if (!targetStarted) {
+    throw new Error("ALESP: o XML de proposituras foi encontrado, mas não pôde ser processado.");
   }
 
   return { results: Array.from(rows.values()), startDate, errors: [] };
