@@ -1,0 +1,39 @@
+# Google / clasp
+.clasprc.json
+**/.clasprc.json
+**/.clasp.json
+**/.claspignore.local
+
+# Ambientes e segredos
+.env
+.env.*
+!.env.example
+credentials.json
+service-account*.json
+**/service-account*.json
+*.pem
+*.key
+*.p12
+
+# Node / Python
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs / temporários
+*.log
+*.tmp
+*.bak
+
+# Dados locais
+data/local/
+data/tmp/
+*.sqlite
