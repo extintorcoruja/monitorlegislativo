@@ -1110,13 +1110,15 @@ function normalizeAutomaticItem(sourceCodeValue, item, matchedTerms, score, veri
 
 async function automaticSearchCamara(keywords, verificationId) {
   const rows = new Map();
-  await Promise.all(keywords.map(async function(k) {
+  for (let start = 0; start < keywords.length; start += 3) {
+    const keywordBatch = keywords.slice(start, start + 3);
+    await Promise.all(keywordBatch.map(async function(k) {
     const url =
       "https://dadosabertos.camara.leg.br/api/v2/proposicoes" +
       "?keywords=" + encodeURIComponent(k.termo) +
       "&dataApresentacaoInicio=" + encodeURIComponent(new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10)) +
       "&dataApresentacaoFim=" + encodeURIComponent(today()) +
-      "&itens=100&pagina=1&ordem=DESC&ordenarPor=id";
+      "&itens=50&pagina=1&ordem=DESC&ordenarPor=id";
     const response = await fetch(url, { headers: { accept: "application/json" } });
     if (!response.ok) throw new Error("Câmara: HTTP " + response.status + " ao pesquisar " + k.termo);
     const payload = await response.json();
@@ -1131,7 +1133,8 @@ async function automaticSearchCamara(keywords, verificationId) {
       const score = existing ? Math.max(existing.score, scored.score) : scored.score;
       rows.set(id, normalizeAutomaticItem("camara", item, matched, score, verificationId));
     });
-  }));
+    }));
+  }
   return Array.from(rows.values());
 }
 
@@ -1331,9 +1334,10 @@ async function runAutomaticSearch(verificationId, fonte, responsible) {
   else results = await automaticSearchAlesp(keywords, verificationId);
 
   const saved = [];
-  for (const item of results) {
-    if (!item.official_id) continue;
-    const row = {
+  const rowsToSave = results.filter(function(item) {
+    return !!item.official_id;
+  }).map(function(item) {
+    return {
       verification_id: verificationId || null,
       source_id: source.id,
       source_code: code,
@@ -1352,9 +1356,14 @@ async function runAutomaticSearch(verificationId, fonte, responsible) {
       updated_at: now(),
       raw: item.raw || {}
     };
-    const up = await db.from("automatic_search_results").upsert(row, { onConflict: "source_code,official_id" }).select("*").single();
+  });
+  for (let start = 0; start < rowsToSave.length; start += 50) {
+    const batch = rowsToSave.slice(start, start + 50);
+    const up = await db.from("automatic_search_results")
+      .upsert(batch, { onConflict: "source_code,official_id" })
+      .select("*");
     if (up.error) throw up.error;
-    saved.push(up.data);
+    saved.push.apply(saved, up.data || []);
   }
 
   const searches = await allRows("manual_searches");
