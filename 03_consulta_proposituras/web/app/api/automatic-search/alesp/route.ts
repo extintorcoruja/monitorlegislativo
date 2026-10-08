@@ -75,15 +75,44 @@ export async function POST(request:Request){
     if(!fileName) throw new Error("ALESP: XML de proposituras não identificado no ZIP. Arquivos encontrados: "+fileNames.slice(0,20).join(", "));
     const xml=new TextDecoder("utf-8").decode(files[fileName]);
     const rows=new Map<string,any>();
+    const diagnostics={
+      startDate,
+      endDate:new Intl.DateTimeFormat("en-CA",{timeZone:"America/Sao_Paulo"}).format(new Date()),
+      zipFile:fileName,
+      xmlBytes:xml.length,
+      propositurasLidas:0,
+      registrosNoPeriodo:0,
+      correspondencias:0
+    };
     const re=/<propositura(?:\s[^>]*)?>([\s\S]*?)<\/propositura>/gi;
     let match:RegExpExecArray|null;
     while((match=re.exec(xml))!==null){
-      const item=parseBlock(match[1],keywords,startDate); if(!item) continue;
+      diagnostics.propositurasLidas++;
+      const item=parseBlock(match[1],keywords,startDate);
+      if(!item) {
+        const entered=dateToIso(xmlTag(match[1],["DtEntradaSistema","DataEntrada","DtEntrada"]));
+        const year=clean(xmlTag(match[1],["AnoLegislativo","Ano","AnoPropositura","ano"]));
+        if((entered && entered>=startDate)||(!entered&&/^\\d{4}$/.test(year)&&year>=startDate.slice(0,4))) {
+          diagnostics.registrosNoPeriodo++;
+        }
+        continue;
+      }
+      diagnostics.registrosNoPeriodo++;
       const existing=rows.get(item.official_id);
       if(existing){item.matched_terms=Array.from(new Set(existing.matched_terms.concat(item.matched_terms)));item.score=Math.max(existing.score,item.score);}
       rows.set(item.official_id,item);
     }
-    const providerResponse={results:Array.from(rows.values()).map(item=>({...item,verification_id:verificationId})),errors:[],startDate};
+    diagnostics.correspondencias=rows.size;
+    if(diagnostics.propositurasLidas===0){
+      throw new Error("ALESP: o XML foi localizado, mas nenhuma propositura foi lida. Consulta não validada.");
+    }
+    const providerResponse={
+      results:Array.from(rows.values()).map(item=>({...item,verification_id:verificationId})),
+      errors:[],
+      startDate,
+      endDate:diagnostics.endDate,
+      diagnostico:diagnostics
+    };
     return Response.json(await rpc("salvarResultadosPesquisaAutomatica",[token,verificationId,"ALESP",responsible,providerResponse]));
   }catch(error){
     return Response.json({ok:false,message:error instanceof Error?error.message:String(error)},{status:400});
